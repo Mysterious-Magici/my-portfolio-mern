@@ -13,7 +13,8 @@ import {
     MessageSquareReply
 } from 'lucide-react';
 
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
+const RAW_API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
+const API_URL = RAW_API_URL.replace(/\/+$/, '');
 
 export default function AdminDashboard() {
     const [token, setToken] = useState(localStorage.getItem('portfolioToken') || '');

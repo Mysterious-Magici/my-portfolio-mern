@@ -8,30 +8,48 @@ require('dotenv').config();
 
 const app = express();
 
-app.use(cors({ origin: '*', methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'] }));
+// 1. Explicit CORS for Vercel Frontend <-> Backend Communication
+app.use(
+    cors({
+        origin: '*',
+        methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+        allowedHeaders: ['Origin', 'X-Requested-With', 'Content-Type', 'Accept', 'Authorization']
+    })
+);
+app.options('*', cors());
 app.use(express.json({ limit: '10mb' }));
 
-// ================= 1. SAFE MONGODB CONNECTION WITH MEMORY FALLBACK ================= //
+// 2. Serverless Cached MongoDB Connection
 let isMongoConnected = false;
 const memoryUsers = [];
 const memoryMessages = [];
 
-const mongoUri = process.env.MONGO_URI || '';
-if (mongoUri.startsWith('mongodb://') || mongoUri.startsWith('mongodb+srv://')) {
-    mongoose
-        .connect(mongoUri)
-        .then(() => {
+async function connectDB() {
+    if (isMongoConnected || mongoose.connection.readyState === 1) {
+        isMongoConnected = true;
+        return;
+    }
+    const mongoUri = (process.env.MONGO_URI || '').trim();
+    if (mongoUri.startsWith('mongodb://') || mongoUri.startsWith('mongodb+srv://')) {
+        try {
+            await mongoose.connect(mongoUri, {
+                serverSelectionTimeoutMS: 5000
+            });
             isMongoConnected = true;
-            console.log('MongoDB Atlas Connected');
-        })
-        .catch((err) => {
-            console.warn('MongoDB connection failed, using In-Memory Fallback:', err.message);
-        });
-} else {
-    console.warn('Valid MONGO_URI not found in .env — running in safe In-Memory mode.');
+            console.log('✅ MongoDB Atlas Connected');
+        } catch (err) {
+            console.warn('⚠️ MongoDB Serverless Fallback Active:', err.message);
+        }
+    }
 }
 
-// Mongoose Schemas
+// Ensure DB connection is checked before handling API routes
+app.use(async (req, res, next) => {
+    await connectDB();
+    next();
+});
+
+// Schemas
 const UserSchema = new mongoose.Schema({
     name: { type: String, required: true },
     email: { type: String, required: true, unique: true, lowercase: true },
@@ -53,8 +71,8 @@ const ContactSchema = new mongoose.Schema({
 });
 const Contact = mongoose.models.Contact || mongoose.model('Contact', ContactSchema);
 
-// ================= 2. JWT AUTH MIDDLEWARES ================= //
-const JWT_SECRET = process.env.JWT_SECRET || 'akash_portfolio_jwt_secret_key_2026_x99';
+// 3. JWT Configuration & Middleware
+const JWT_SECRET = (process.env.JWT_SECRET || 'akash_portfolio_jwt_secret_key_2026_x99').trim();
 
 const verifyToken = (req, res, next) => {
     const authHeader = req.headers.authorization;
@@ -65,20 +83,29 @@ const verifyToken = (req, res, next) => {
         req.user = jwt.verify(authHeader.split(' ')[1], JWT_SECRET);
         next();
     } catch (err) {
-        return res.status(403).json({ error: 'Invalid or expired token.' });
+        return res.status(403).json({ error: 'Session expired. Please sign in again.' });
     }
 };
 
 const verifyAdmin = (req, res, next) => {
     verifyToken(req, res, () => {
         if (req.user.role !== 'admin') {
-            return res.status(403).json({ error: 'Admin privileges required.' });
+            return res.status(403).json({ error: 'Admin access required.' });
         }
         next();
     });
 };
 
-// ================= 3. AUTH ROUTES (USER VS ADMIN) ================= //
+// Health Check Route
+app.get('/', (req, res) => {
+    res.json({
+        status: 'Portfolio Backend Online',
+        mongoConnected: isMongoConnected,
+        groqConfigured: Boolean(process.env.GROQ_API_KEY)
+    });
+});
+
+// 4. Auth Routes (Normal User & Admin)
 app.post('/api/auth/register', async (req, res) => {
     try {
         const { name, email, password } = req.body;
@@ -90,7 +117,7 @@ app.post('/api/auth/register', async (req, res) => {
 
         if (isMongoConnected) {
             const existing = await User.findOne({ email: cleanEmail });
-            if (existing) return res.status(400).json({ error: 'Email already registered.' });
+            if (existing) return res.status(400).json({ error: 'Email already registered. Please sign in.' });
             const user = await User.create({ name, email: cleanEmail, passwordHash });
             const token = jwt.sign({ id: user._id, role: 'user', name, email: cleanEmail }, JWT_SECRET, { expiresIn: '24h' });
             return res.status(201).json({ token, user: { name, email: cleanEmail, role: 'user' } });
@@ -104,62 +131,77 @@ app.post('/api/auth/register', async (req, res) => {
             return res.status(201).json({ token, user: { name, email: cleanEmail, role: 'user' } });
         }
     } catch (err) {
-        res.status(500).json({ error: 'Registration failed.' });
+        res.status(500).json({ error: 'Registration failed: ' + err.message });
     }
 });
 
 app.post('/api/auth/login', async (req, res) => {
     try {
         const { identifier, password, loginType } = req.body;
+        const cleanId = (identifier || '').trim();
+        const cleanPass = (password || '').trim();
 
-        // Admin Login
+        // Admin Login (Works with .env or fallback credentials)
         if (loginType === 'admin') {
-            const adminUser = process.env.ADMIN_USERNAME || 'akash_admin';
-            const adminPass = process.env.ADMIN_PASSWORD || 'SuperSecretAdminPassword123!';
-            if (identifier === adminUser && password === adminPass) {
+            const adminUser = (process.env.ADMIN_USERNAME || 'akash_admin').trim();
+            const adminPass = (process.env.ADMIN_PASSWORD || 'SuperSecretAdminPassword123!').trim();
+
+            if (cleanId === adminUser && cleanPass === adminPass) {
                 const token = jwt.sign(
                     { role: 'admin', name: 'Akash Karmakar (Admin)', email: 'admin@akash.dev' },
                     JWT_SECRET,
                     { expiresIn: '12h' }
                 );
-                return res.json({ token, user: { name: 'Akash Karmakar (Admin)', email: 'admin@akash.dev', role: 'admin' } });
+                return res.json({
+                    token,
+                    user: { name: 'Akash Karmakar (Admin)', email: 'admin@akash.dev', role: 'admin' }
+                });
             }
             return res.status(401).json({ error: 'Invalid Admin Username or Password.' });
         }
 
         // Normal User Login
-        const cleanEmail = (identifier || '').toLowerCase().trim();
+        const cleanEmail = cleanId.toLowerCase();
         const user = isMongoConnected
             ? await User.findOne({ email: cleanEmail })
             : memoryUsers.find((u) => u.email === cleanEmail);
 
-        if (!user || !(await bcrypt.compare(password, user.passwordHash))) {
+        if (!user || !(await bcrypt.compare(cleanPass, user.passwordHash))) {
             return res.status(401).json({ error: 'Invalid email or password.' });
         }
 
-        const token = jwt.sign({ id: user._id, role: 'user', name: user.name, email: user.email }, JWT_SECRET, { expiresIn: '24h' });
+        const token = jwt.sign(
+            { id: user._id, role: 'user', name: user.name, email: user.email },
+            JWT_SECRET,
+            { expiresIn: '24h' }
+        );
         res.json({ token, user: { name: user.name, email: user.email, role: 'user' } });
     } catch (err) {
-        res.status(500).json({ error: 'Login failed.' });
+        res.status(500).json({ error: 'Login error: ' + err.message });
     }
 });
 
-// ================= 4. CONTACT & MESSAGE ROUTES ================= //
+// 5. Contact & Message Routes
 app.post('/api/contact', async (req, res) => {
     try {
         const { name, email, category, subject, message } = req.body;
         if (!name || !email || !message) {
             return res.status(400).json({ error: 'Name, email, and message are required.' });
         }
-
         if (isMongoConnected) {
-            const saved = await Contact.create({ name, email: email.toLowerCase(), category, subject, message });
+            const saved = await Contact.create({
+                name,
+                email: email.toLowerCase().trim(),
+                category,
+                subject,
+                message
+            });
             return res.status(201).json({ message: 'Message saved to MongoDB!', data: saved });
         } else {
             const msgObj = {
                 _id: Date.now().toString(),
                 name,
-                email: email.toLowerCase(),
+                email: email.toLowerCase().trim(),
                 category: category || 'Hiring / Full-Time',
                 subject: subject || 'Portfolio Inquiry',
                 message,
@@ -168,7 +210,7 @@ app.post('/api/contact', async (req, res) => {
                 createdAt: new Date()
             };
             memoryMessages.unshift(msgObj);
-            return res.status(201).json({ message: 'Message saved!', data: msgObj });
+            return res.status(201).json({ message: 'Message received!', data: msgObj });
         }
     } catch (err) {
         res.status(500).json({ error: 'Failed to save message.' });
@@ -191,17 +233,20 @@ app.get('/api/admin/messages', verifyAdmin, async (req, res) => {
 app.patch('/api/admin/messages/:id', verifyAdmin, async (req, res) => {
     const { status, adminReply } = req.body;
     if (isMongoConnected) {
-        const updated = await Contact.findByIdAndUpdate(req.params.id, { status, adminReply }, { new: true });
+        const updated = await Contact.findByIdAndUpdate(
+            req.params.id,
+            { status, adminReply },
+            { new: true }
+        );
         return res.json(updated);
-    } else {
-        const idx = memoryMessages.findIndex((m) => m._id === req.params.id);
-        if (idx !== -1) {
-            if (status) memoryMessages[idx].status = status;
-            if (adminReply !== undefined) memoryMessages[idx].adminReply = adminReply;
-            return res.json(memoryMessages[idx]);
-        }
-        return res.status(404).json({ error: 'Not found' });
     }
+    const idx = memoryMessages.findIndex((m) => m._id === req.params.id);
+    if (idx !== -1) {
+        if (status) memoryMessages[idx].status = status;
+        if (adminReply !== undefined) memoryMessages[idx].adminReply = adminReply;
+        return res.json(memoryMessages[idx]);
+    }
+    res.status(404).json({ error: 'Message not found' });
 });
 
 app.delete('/api/admin/messages/:id', verifyAdmin, async (req, res) => {
@@ -214,23 +259,35 @@ app.delete('/api/admin/messages/:id', verifyAdmin, async (req, res) => {
     res.json({ message: 'Deleted' });
 });
 
-// ================= 5. GROQ AI CHATBOT ROUTE ================= //
+// 6. Groq AI Chatbot Route
+const PORTFOLIO_SYSTEM_PROMPT = `
+You are the official AI Portfolio Assistant for Akash Karmakar (GitHub: https://github.com/Mysterious-Magici).
+Answer concisely in 2 to 4 sentences.
+- Education: B.Tech in Computer Science & Engineering at Bankura Unnayani Institute of Engineering (West Bengal, India).
+- Experience: Data Analyst Intern at Codec Technologies; Deloitte Data Analytics Virtual Job Simulation.
+- Skills: MERN Stack (MongoDB, Express, React, Node.js), Python, FastAPI, Django, XGBoost, LightGBM, CatBoost, Scikit-Learn, LangGraph, Power BI, Tableau, SQL, Kotlin.
+- Projects: Anuman AI (LangGraph data agent), SmartFlow Portal (MERN), SiteEstimate AI (MERN + Claude API), Apnar Swasthya (XGBoost + FastAPI), A11yWeaver (Android Kotlin accessibility), Bank Customer Churn Analysis, Medical Cost Prediction, Prospective Customer Segmentation.
+`;
+
 function generateSmartFallback(query = '') {
     const q = query.toLowerCase();
     if (q.includes('project') || q.includes('work') || q.includes('github')) {
-        return "Akash's featured projects include Anuman AI (LangGraph data agent), A11yWeaver (Kotlin accessibility toolkit), Apnar Swasthya (XGBoost + FastAPI medical triage), SiteEstimate AI (MERN + Claude API), and SmartFlow Portal. View all code at https://github.com/Mysterious-Magici";
+        return "Akash's key projects include Anuman AI (LangGraph agent), SmartFlow Portal (MERN), SiteEstimate AI, Apnar Swasthya (XGBoost + FastAPI), A11yWeaver (Kotlin), and Bank Customer Churn Analysis. Explore all repositories at https://github.com/Mysterious-Magici";
     }
     if (q.includes('skill') || q.includes('stack') || q.includes('tech')) {
-        return "Akash specializes in Full-Stack MERN (MongoDB, Express, React, Node.js), Python (FastAPI, Django), Data Analytics (Power BI, Tableau, SQL), and Machine Learning/GenAI (XGBoost, Scikit-Learn, LangGraph, Groq & Gemini APIs).";
+        return "Akash is skilled in Full-Stack MERN (MongoDB, Express, React, Node.js), Python (FastAPI, Django), Machine Learning (XGBoost, Scikit-Learn, LangGraph), and Data Analytics (Power BI, Tableau, SQL).";
     }
     if (q.includes('intern') || q.includes('experience') || q.includes('deloitte')) {
-        return "Akash worked as a Data Analyst Intern at Codec Technologies and completed the Deloitte Data Analytics Virtual Job Simulation.";
+        return "Akash completed a Data Analyst Internship at Codec Technologies and the Deloitte Data Analytics Virtual Job Simulation, building predictive models and executive BI dashboards.";
     }
-    return "Hi! I'm Akash Karmakar's AI assistant. Ask me about his MERN & AI projects (Anuman AI, Apnar Swasthya, SmartFlow Portal), his internships, or visit his GitHub (@Mysterious-Magici)!";
+    if (q.includes('contact') || q.includes('hire') || q.includes('email')) {
+        return "You can send a message directly to Akash using the 'Get In Touch' section on this site, or log in through the User Portal in the top navbar to track your inquiry status!";
+    }
+    return "Hi! I'm Akash Karmakar's AI assistant. Akash is a Full-Stack MERN Developer and Data & AI Engineer. Ask me about his projects, technical skills, internships, or GitHub (@Mysterious-Magici)!";
 }
 
 app.post('/api/chat', async (req, res) => {
-    const { message } = req.body;
+    const { message, imageBase64 } = req.body;
     const apiKey = (process.env.GROQ_API_KEY || '').trim();
 
     if (!apiKey || apiKey.includes('your_') || apiKey.includes('paste_')) {
@@ -239,21 +296,38 @@ app.post('/api/chat', async (req, res) => {
 
     try {
         const groq = new Groq({ apiKey });
-        const completion = await groq.chat.completions.create({
-            model: 'llama-3.3-70b-versatile',
-            messages: [
-                {
-                    role: 'system',
-                    content:
-                        "You are the AI Portfolio Assistant for Akash Karmakar (B.Tech CSE, Bankura Unnayani Institute of Engineering; GitHub: github.com/Mysterious-Magici). Skills: MERN Stack, Python, FastAPI, XGBoost, LangGraph, Power BI. Projects: Anuman AI, A11yWeaver, Apnar Swasthya, SiteEstimate AI, SmartFlow Portal. Answer concisely in 2-4 sentences."
-                },
-                { role: 'user', content: message || 'Hello' }
-            ],
-            temperature: 0.6,
-            max_tokens: 350
-        });
+        let completion;
+
+        if (imageBase64) {
+            completion = await groq.chat.completions.create({
+                model: 'meta-llama/llama-4-scout-17b-16e-instruct',
+                messages: [
+                    {
+                        role: 'user',
+                        content: [
+                            { type: 'text', text: `${PORTFOLIO_SYSTEM_PROMPT}\n\nUser Question: ${message || 'Analyze this image.'}` },
+                            { type: 'image_url', image_url: { url: imageBase64 } }
+                        ]
+                    }
+                ],
+                temperature: 0.6,
+                max_tokens: 350
+            });
+        } else {
+            completion = await groq.chat.completions.create({
+                model: 'llama-3.3-70b-versatile',
+                messages: [
+                    { role: 'system', content: PORTFOLIO_SYSTEM_PROMPT },
+                    { role: 'user', content: message || 'Hello' }
+                ],
+                temperature: 0.6,
+                max_tokens: 350
+            });
+        }
+
         res.json({ reply: completion.choices[0]?.message?.content || generateSmartFallback(message) });
     } catch (err) {
+        console.error('Groq API error:', err.message);
         res.json({ reply: generateSmartFallback(message) });
     }
 });

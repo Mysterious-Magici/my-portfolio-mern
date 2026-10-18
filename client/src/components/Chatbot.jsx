@@ -2,13 +2,31 @@ import React, { useState, useRef, useEffect } from 'react';
 import axios from 'axios';
 import { MessageSquare, X, Send, Mic, Image as ImageIcon, Bot, Sparkles } from 'lucide-react';
 
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
+const RAW_API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
+const API_URL = RAW_API_URL.replace(/\/+$/, '');
 
 const QUICK_PROMPTS = [
     'What are Akash’s top projects?',
     'What is his tech stack?',
     'Tell me about his internships'
 ];
+
+function getClientSmartAnswer(query = '') {
+    const q = query.toLowerCase();
+    if (q.includes('project') || q.includes('work') || q.includes('github')) {
+        return "Akash's featured projects include Anuman AI (LangGraph data agent), SmartFlow Portal (MERN Stack), SiteEstimate AI (MERN + Claude API), Apnar Swasthya (XGBoost + FastAPI), A11yWeaver (Android/Kotlin), Bank Customer Churn Analysis, and Medical Cost Prediction. Explore his code at github.com/Mysterious-Magici!";
+    }
+    if (q.includes('skill') || q.includes('stack') || q.includes('tech')) {
+        return "Akash specializes in Full-Stack MERN (MongoDB, Express.js, React.js, Node.js), Python (FastAPI, Django), Machine Learning (XGBoost, LightGBM, CatBoost, Scikit-Learn, LangGraph), and Data Analytics (Power BI, Tableau, SQL).";
+    }
+    if (q.includes('intern') || q.includes('experience') || q.includes('deloitte')) {
+        return "Akash worked as a Data Analyst Intern at Codec Technologies and completed the Deloitte Data Analytics Virtual Job Simulation, specializing in predictive analytics and interactive BI dashboards.";
+    }
+    if (q.includes('contact') || q.includes('hire') || q.includes('email')) {
+        return "You can reach Akash directly via the 'Get In Touch' form on this page, or sign in via the User/Admin Portal in the top navigation bar to track your inquiry!";
+    }
+    return "Akash Karmakar is a Full-Stack MERN Developer and Data & AI Engineer from West Bengal, India. Ask me about his projects (Anuman AI, SmartFlow Portal, Apnar Swasthya), tech stack, or internships!";
+}
 
 export default function Chatbot() {
     const [isOpen, setIsOpen] = useState(false);
@@ -79,10 +97,7 @@ export default function Chatbot() {
         } catch (error) {
             setMessages((prev) => [
                 ...prev,
-                {
-                    role: 'assistant',
-                    text: "Akash specializes in Full-Stack MERN, Python (FastAPI), XGBoost, and GenAI. Check out his code at github.com/Mysterious-Magici! (Note: Ensure backend server on port 5000 is running)."
-                }
+                { role: 'assistant', text: getClientSmartAnswer(userMsg.text) }
             ]);
         } finally {
             setLoading(false);
@@ -101,7 +116,6 @@ export default function Chatbot() {
                 </button>
             ) : (
                 <div className="w-80 sm:w-96 bg-white rounded-2xl shadow-2xl border border-slate-200 overflow-hidden flex flex-col h-[30rem]">
-                    {/* Header */}
                     <div className="bg-gradient-to-r from-indigo-600 to-sky-500 text-white px-4 py-3 flex items-center justify-between">
                         <div className="flex items-center gap-2">
                             <Bot className="w-5 h-5" />
@@ -115,7 +129,6 @@ export default function Chatbot() {
                         </button>
                     </div>
 
-                    {/* Messages */}
                     <div className="flex-1 p-3.5 overflow-y-auto space-y-3 bg-slate-50">
                         {messages.map((m, idx) => (
                             <div key={idx} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
@@ -136,7 +149,6 @@ export default function Chatbot() {
                         <div ref={chatEndRef} />
                     </div>
 
-                    {/* Quick Prompt Chips */}
                     <div className="px-3 py-2 bg-slate-100/80 border-t border-slate-200/70 flex gap-1.5 overflow-x-auto no-scrollbar">
                         {QUICK_PROMPTS.map((q, i) => (
                             <button
@@ -159,7 +171,6 @@ export default function Chatbot() {
                         </div>
                     )}
 
-                    {/* Input Bar */}
                     <div className="p-2.5 bg-white border-t border-slate-200 flex items-center gap-1">
                         <input
                             type="file"
@@ -172,7 +183,7 @@ export default function Chatbot() {
                             type="button"
                             onClick={() => fileInputRef.current?.click()}
                             className="p-2 text-slate-400 hover:text-indigo-600 rounded-lg hover:bg-slate-100"
-                            title="Upload Job Description Screenshot"
+                            title="Upload Image"
                         >
                             <ImageIcon className="w-4 h-4" />
                         </button>
