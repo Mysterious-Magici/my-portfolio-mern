@@ -8,18 +8,11 @@ require('dotenv').config();
 
 const app = express();
 
-// 1. Explicit CORS for Vercel Frontend <-> Backend Communication
-app.use(
-    cors({
-        origin: '*',
-        methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-        allowedHeaders: ['Origin', 'X-Requested-With', 'Content-Type', 'Accept', 'Authorization']
-    })
-);
-app.options('*', cors());
+// 1. Safe CORS Configuration (Compatible with both Express 4 & Express 5)
+app.use(cors());
 app.use(express.json({ limit: '10mb' }));
 
-// 2. Serverless Cached MongoDB Connection
+// 2. Non-Blocking Serverless MongoDB Connection
 let isMongoConnected = false;
 const memoryUsers = [];
 const memoryMessages = [];
@@ -33,21 +26,15 @@ async function connectDB() {
     if (mongoUri.startsWith('mongodb://') || mongoUri.startsWith('mongodb+srv://')) {
         try {
             await mongoose.connect(mongoUri, {
-                serverSelectionTimeoutMS: 5000
+                serverSelectionTimeoutMS: 3000
             });
             isMongoConnected = true;
             console.log('✅ MongoDB Atlas Connected');
         } catch (err) {
-            console.warn('⚠️ MongoDB Serverless Fallback Active:', err.message);
+            console.warn('⚠️ MongoDB Fallback Mode:', err.message);
         }
     }
 }
-
-// Ensure DB connection is checked before handling API routes
-app.use(async (req, res, next) => {
-    await connectDB();
-    next();
-});
 
 // Schemas
 const UserSchema = new mongoose.Schema({
@@ -71,7 +58,7 @@ const ContactSchema = new mongoose.Schema({
 });
 const Contact = mongoose.models.Contact || mongoose.model('Contact', ContactSchema);
 
-// 3. JWT Configuration & Middleware
+// 3. JWT Middleware
 const JWT_SECRET = (process.env.JWT_SECRET || 'akash_portfolio_jwt_secret_key_2026_x99').trim();
 
 const verifyToken = (req, res, next) => {
@@ -96,18 +83,19 @@ const verifyAdmin = (req, res, next) => {
     });
 };
 
-// Health Check Route
+// 4. Health Check Route (Instant 200 OK — Never crashes on cold start)
 app.get('/', (req, res) => {
-    res.json({
+    res.status(200).json({
         status: 'Portfolio Backend Online',
-        mongoConnected: isMongoConnected,
+        mongoConfigured: Boolean(process.env.MONGO_URI),
         groqConfigured: Boolean(process.env.GROQ_API_KEY)
     });
 });
 
-// 4. Auth Routes (Normal User & Admin)
+// 5. Auth Routes
 app.post('/api/auth/register', async (req, res) => {
     try {
+        await connectDB();
         const { name, email, password } = req.body;
         if (!name || !email || !password) {
             return res.status(400).json({ error: 'All fields are required.' });
@@ -137,11 +125,11 @@ app.post('/api/auth/register', async (req, res) => {
 
 app.post('/api/auth/login', async (req, res) => {
     try {
+        await connectDB();
         const { identifier, password, loginType } = req.body;
         const cleanId = (identifier || '').trim();
         const cleanPass = (password || '').trim();
 
-        // Admin Login (Works with .env or fallback credentials)
         if (loginType === 'admin') {
             const adminUser = (process.env.ADMIN_USERNAME || 'akash_admin').trim();
             const adminPass = (process.env.ADMIN_PASSWORD || 'SuperSecretAdminPassword123!').trim();
@@ -160,7 +148,6 @@ app.post('/api/auth/login', async (req, res) => {
             return res.status(401).json({ error: 'Invalid Admin Username or Password.' });
         }
 
-        // Normal User Login
         const cleanEmail = cleanId.toLowerCase();
         const user = isMongoConnected
             ? await User.findOne({ email: cleanEmail })
@@ -181,9 +168,10 @@ app.post('/api/auth/login', async (req, res) => {
     }
 });
 
-// 5. Contact & Message Routes
+// 6. Contact & Message Routes
 app.post('/api/contact', async (req, res) => {
     try {
+        await connectDB();
         const { name, email, category, subject, message } = req.body;
         if (!name || !email || !message) {
             return res.status(400).json({ error: 'Name, email, and message are required.' });
@@ -218,6 +206,7 @@ app.post('/api/contact', async (req, res) => {
 });
 
 app.get('/api/user/messages', verifyToken, async (req, res) => {
+    await connectDB();
     const email = req.user.email.toLowerCase();
     const list = isMongoConnected
         ? await Contact.find({ email }).sort({ createdAt: -1 })
@@ -226,11 +215,13 @@ app.get('/api/user/messages', verifyToken, async (req, res) => {
 });
 
 app.get('/api/admin/messages', verifyAdmin, async (req, res) => {
+    await connectDB();
     const list = isMongoConnected ? await Contact.find().sort({ createdAt: -1 }) : memoryMessages;
     res.json(list);
 });
 
 app.patch('/api/admin/messages/:id', verifyAdmin, async (req, res) => {
+    await connectDB();
     const { status, adminReply } = req.body;
     if (isMongoConnected) {
         const updated = await Contact.findByIdAndUpdate(
@@ -250,6 +241,7 @@ app.patch('/api/admin/messages/:id', verifyAdmin, async (req, res) => {
 });
 
 app.delete('/api/admin/messages/:id', verifyAdmin, async (req, res) => {
+    await connectDB();
     if (isMongoConnected) {
         await Contact.findByIdAndDelete(req.params.id);
     } else {
@@ -259,7 +251,7 @@ app.delete('/api/admin/messages/:id', verifyAdmin, async (req, res) => {
     res.json({ message: 'Deleted' });
 });
 
-// 6. Groq AI Chatbot Route
+// 7. Groq AI Chatbot Route
 const PORTFOLIO_SYSTEM_PROMPT = `
 You are the official AI Portfolio Assistant for Akash Karmakar (GitHub: https://github.com/Mysterious-Magici).
 Answer concisely in 2 to 4 sentences.
@@ -279,9 +271,6 @@ function generateSmartFallback(query = '') {
     }
     if (q.includes('intern') || q.includes('experience') || q.includes('deloitte')) {
         return "Akash completed a Data Analyst Internship at Codec Technologies and the Deloitte Data Analytics Virtual Job Simulation, building predictive models and executive BI dashboards.";
-    }
-    if (q.includes('contact') || q.includes('hire') || q.includes('email')) {
-        return "You can send a message directly to Akash using the 'Get In Touch' section on this site, or log in through the User Portal in the top navbar to track your inquiry status!";
     }
     return "Hi! I'm Akash Karmakar's AI assistant. Akash is a Full-Stack MERN Developer and Data & AI Engineer. Ask me about his projects, technical skills, internships, or GitHub (@Mysterious-Magici)!";
 }
@@ -327,14 +316,14 @@ app.post('/api/chat', async (req, res) => {
 
         res.json({ reply: completion.choices[0]?.message?.content || generateSmartFallback(message) });
     } catch (err) {
-        console.error('Groq API error:', err.message);
         res.json({ reply: generateSmartFallback(message) });
     }
 });
 
+// Local listen vs Vercel export
 const PORT = process.env.PORT || 5000;
-if (process.env.NODE_ENV !== 'production') {
-    app.listen(PORT, () => console.log(`🚀 Server running on http://localhost:${PORT}`));
+if (!process.env.VERCEL) {
+    app.listen(PORT, () => console.log(`Server running on http://localhost:${PORT}`));
 }
 
 module.exports = app;
