@@ -21,7 +21,7 @@ This application serves as both a central technical showcase and a live demonstr
 
 | Section | Preview |
 | :--- | :--- |
-| **Hero & Navigation** | ![Hero View](1.jpg) |
+| **Hero & Navigation** | ![Hero View](https://github.com/Mysterious-Magici/my-portfolio-mern/blob/main/1.png) |
 | **Featured Works & Repositories** | ![Featured Projects](2.png) |
 | **Skills & Communication Form** | ![Skills & Inquiries](3.png) |
 | **Multimodal Groq AI Assistant** | ![Portfolio AI](4.png) |
